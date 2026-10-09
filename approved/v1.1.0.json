@@ -1,0 +1,13 @@
+{
+  "version": "1.1.0",
+  "installer": {
+    "name": "ILR-Lens-Setup-1.1.0.exe",
+    "bytes": 124774232,
+    "sha256": "b059e3dadf85185db19397eb0e9729e08f14ba7bdc06d4d2999c229041527a48"
+  },
+  "guides": {
+    "ILR-Lens-Quick-Start.pdf": "3f7c21ed489119a3ed1dcaeb1d5b7fc6a176f3495f9643b76f4eba12ff103b0c",
+    "ILR-Lens-User-Guide.pdf": "1e73822f50cb91ddedd731593aff9776289bf22820c43f5b72c29f19b29a17db",
+    "ILR-Lens-Release-Notes.pdf": "81edcf8c2bb875c5bf7aa5960676b071f8ae3629a3e104be6078bbe80bd488f2"
+  }
+}

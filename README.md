@@ -63,9 +63,10 @@ ILR Lens includes LARS reference data published by the Department for Education 
 
 Only approved releases are published here. A release is never edited after it is published: a correction is a new version.
 
-1. Assemble the files on Windows with the FEFunding packaging script, which checks the installer's checksum and signature, regenerates `SHA256SUMS.txt` and builds the ZIP.
-2. Create a **draft** release tagged `v<version>` and attach the seven files.
-3. Run **Actions › Check draft release** with the tag and the approved installer SHA-256. It checks every attached file, the checksums, the ZIP's contents and the installer's signature.
-4. Publish the release only when that check passes and the owner has approved it.
+1. Commit the version's approved SHA-256 values as `approved/v<version>.json` (see `approved/v1.1.0.json`).
+2. Assemble the files on Windows with the FEFunding packaging script, which checks the installer's checksum and signature, regenerates `SHA256SUMS.txt` and builds the ZIP.
+3. Create a **draft** release tagged `v<version>` and attach the seven files.
+4. Run **Actions › Check draft release** with the tag and the approved installer SHA-256. It refuses a release that is already published, then checks every attached file against the approved values, `SHA256SUMS.txt`, the ZIP's contents and the installer's signature.
+5. Publish the release only when that check passes and the owner has approved it.
 
-No source code, secrets, credentials or development history belong in this repository.
+No source code, secrets, credentials or development history belong in this repository: only this README, the approved checksums, the check workflow and the releases themselves.
