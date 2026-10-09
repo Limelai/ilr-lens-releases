@@ -1,0 +1,133 @@
+name: Check draft release
+
+# Checks the files attached to an ILR Lens release before anyone publishes it.
+# Run it by hand on the draft: a published release is never edited, so this is
+# the last chance to catch a wrong file.
+#
+# It downloads every attached file and checks:
+# - the release holds exactly the seven expected files;
+# - the installer has the approved SHA-256 (given as an input, from the
+#   FEFunding release record) and a Valid, time-stamped Authenticode signature
+#   from LIMELAI LIMITED;
+# - SHA256SUMS.txt lists four files, including the approved installer hash,
+#   and each guide matches its line;
+# - the ZIP holds exactly six files, each byte for byte the file attached
+#   beside it;
+# - README.txt names the version.
+#
+# It changes nothing. It uses no third-party action and no secret.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v1.1.0"
+        required: true
+      installer_sha256:
+        description: "The approved installer SHA-256 (64 lower-case hex characters)"
+        required: true
+
+# Draft releases are visible only to tokens that can write to the repository.
+# This job only reads: it creates, edits and uploads nothing.
+permissions:
+  contents: write
+
+concurrency:
+  group: check-draft-release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Attached files match the approved release
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download and check every attached file
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          INSTALLER_SHA256: ${{ inputs.installer_sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 3
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $summary = New-Object System.Collections.Generic.List[string]
+          function Fail([string] $Why) {
+            "## Check draft release: FAILED`n`n$Why`n`nDo not publish this release." | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            throw $Why
+          }
+          function Sha([string] $Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+
+          if ($env:TAG -notmatch '^v(\d+\.\d+\.\d+)$') { Fail "The tag must look like v1.2.3; got '$($env:TAG)'." }
+          $version = $Matches[1]
+          if ($env:INSTALLER_SHA256 -notmatch '^[0-9a-f]{64}$') { Fail 'The installer SHA-256 must be 64 lower-case hex characters.' }
+
+          $installer = "ILR-Lens-Setup-$version.exe"
+          $zipName = "ILR-Lens-$version-Windows.zip"
+          $guides = @('ILR-Lens-Quick-Start.pdf', 'ILR-Lens-Release-Notes.pdf', 'ILR-Lens-User-Guide.pdf')
+          $package = @($installer) + $guides + @('README.txt', 'SHA256SUMS.txt')
+          $expected = [string[]](@($package) + @($zipName))
+          [Array]::Sort($expected, [StringComparer]::Ordinal)
+
+          $json = gh release view $env:TAG --json isDraft,assets
+          if ($LASTEXITCODE -ne 0 -or -not $json) { Fail "No release $($env:TAG) was found." }
+          $release = ($json -join "`n") | ConvertFrom-Json
+          $attached = [string[]]@($release.assets | ForEach-Object { $_.name })
+          [Array]::Sort($attached, [StringComparer]::Ordinal)
+          if (($attached -join '|') -cne ($expected -join '|')) {
+            Fail "The release holds: $($attached -join ', '). It must hold exactly: $($expected -join ', ')."
+          }
+          $state = if ($release.isDraft) { 'draft' } else { 'published' }
+
+          $dir = Join-Path $env:RUNNER_TEMP 'release'
+          gh release download $env:TAG --dir $dir
+          if ($LASTEXITCODE -ne 0) { Fail 'Could not download the attached files.' }
+
+          $exe = Join-Path $dir $installer
+          if ((Sha $exe) -ne $env:INSTALLER_SHA256) { Fail "$installer is not the approved installer: its SHA-256 is $(Sha $exe)." }
+          $sig = Get-AuthenticodeSignature -LiteralPath $exe
+          if ("$($sig.Status)" -ne 'Valid') { Fail "The installer's Authenticode status is $($sig.Status)." }
+          if ($sig.SignerCertificate.Subject -notmatch '(^|,\s*)CN=LIMELAI LIMITED(,|$)') { Fail 'The installer is not signed by LIMELAI LIMITED.' }
+          if ($null -eq $sig.TimeStamperCertificate) { Fail 'The installer signature has no time stamp.' }
+
+          $sums = @{}
+          foreach ($line in [IO.File]::ReadAllLines((Join-Path $dir 'SHA256SUMS.txt'))) {
+            if ($line -eq '') { continue }
+            if ($line -notmatch '^([0-9a-f]{64})  (\S+)$') { Fail "Unreadable line in SHA256SUMS.txt: $line" }
+            $sums[$Matches[2]] = $Matches[1]
+          }
+          if ($sums.Count -ne 4) { Fail "SHA256SUMS.txt lists $($sums.Count) files, not 4." }
+          if ($sums[$installer] -ne $env:INSTALLER_SHA256) { Fail 'SHA256SUMS.txt does not list the approved installer hash.' }
+          foreach ($g in $guides) {
+            if ($sums[$g] -ne (Sha (Join-Path $dir $g))) { Fail "$g does not match its line in SHA256SUMS.txt." }
+          }
+          if (-not ([IO.File]::ReadAllText((Join-Path $dir 'README.txt'))).StartsWith("ILR Lens $version")) { Fail 'README.txt does not name this version.' }
+
+          $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $dir $zipName))
+          try {
+            $inside = [string[]]@($zip.Entries | ForEach-Object { $_.FullName })
+            $want = [string[]]@($package)
+            [Array]::Sort($inside, [StringComparer]::Ordinal); [Array]::Sort($want, [StringComparer]::Ordinal)
+            if (($inside -join '|') -cne ($want -join '|')) { Fail "The ZIP holds: $($inside -join ', '). It must hold exactly: $($want -join ', ')." }
+            foreach ($entry in $zip.Entries) {
+              $sha = [Security.Cryptography.SHA256]::Create()
+              $stream = $entry.Open()
+              try { $h = (($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) -join '') } finally { $stream.Dispose(); $sha.Dispose() }
+              if ($h -ne (Sha (Join-Path $dir $entry.FullName))) { Fail "$($entry.FullName) inside the ZIP differs from the file attached beside it." }
+            }
+          } finally { $zip.Dispose() }
+
+          $summary.Add("## Check draft release: passed")
+          $summary.Add('')
+          $summary.Add("Release $($env:TAG) ($state). The installer is the approved file, signed by LIMELAI LIMITED with a Valid, time-stamped signature. Every guide matches SHA256SUMS.txt, and the ZIP holds exactly the six package files, each identical to the file attached beside it.")
+          $summary.Add('')
+          $summary.Add('| File | Bytes | SHA-256 |')
+          $summary.Add('| --- | --- | --- |')
+          foreach ($name in $expected) {
+            $p = Join-Path $dir $name
+            $summary.Add("| $name | $((Get-Item -LiteralPath $p).Length) | ``$(Sha $p)`` |")
+          }
+          $summary -join "`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          $summary -join "`n" | Write-Host
